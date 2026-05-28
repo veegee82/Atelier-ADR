@@ -1,5 +1,6 @@
 # ADR-0062 — Console UX Overhaul:
 # Bridge Setup Wizard · People Hub · Agent Hub Peer Cards · Workflow Split-View
+# · First-Run Setup Gate · Floating Console Assistant
 
 **Status:** Proposed — 2026-05-28
 **Date:** 2026-05-28
@@ -8,7 +9,7 @@
 **Implements:** UX design concept (Discord voice session, 2026-05-28)
 **Depends on:** ADR-0037 (console relaunch, React stack), ADR-0039 (workflow builder),
 ADR-0048 (L38 A2A / Agent Hub), L18 (roles), L19 (disclosure), L20 (quota),
-L28 (conversation recall), L38 (A2A), ADR-0053 (L39 AtelierFed),
+L23 (STT), L28 (conversation recall), L38 (A2A), ADR-0053 (L39 AtelierFed),
 ADR-0054 (L41 social capability grants)
 **Scope:** `core/console/atelier_console/web-next/` (frontend) +
 `core/console/atelier_console/routes/` (backend REST extensions)
@@ -566,6 +567,380 @@ web-next/src/assets/workflow-templates/    (new directory, 5 × .awpkg)
 
 ---
 
+## Component 5 — First-Run Setup Gate
+
+### Problem
+
+A freshly started Docker instance has no `ANTHROPIC_API_KEY`, no configured
+bridge, and no running engine. The console is reachable, but AtelierOS is
+functionally inert. The operator opens the browser and sees an empty dashboard
+with no indication of what is wrong or what to do first.
+
+This is the single biggest adoption blocker for a self-hosted deployment:
+the gap between "docker compose up" and "the system works" is invisible.
+
+### Decision
+
+Add a boot-state check to the console that detects an unconfigured instance
+and shows a non-dismissable full-screen onboarding overlay until the engine
+is connected. The overlay is the very first thing an operator sees on a fresh
+instance; it disappears permanently once `engine_connected: true`.
+
+#### Boot-state detection
+
+On every page load the React app calls `GET /v1/console/setup/status`:
+
+```json
+{
+  "first_run": true,
+  "engine_connected": false,
+  "engine_model": null,
+  "bridges_configured": [],
+  "setup_complete": false
+}
+```
+
+If `setup_complete: false` → render the `<SetupGate>` overlay on top of the
+entire app tree (z-index above sidebar, navbar, everything). The rest of the
+app is rendered but inert underneath.
+
+#### 4-step onboarding overlay
+
+**Step 1 — Welcome (auto-advance after 2 s or on button click)**
+
+```
+┌─────────────────────────────────────────────┐
+│                                             │
+│            🏛  AtelierOS                   │
+│                                             │
+│   Dein KI-Betriebssystem ist bereit.        │
+│   Lass uns es in 3 Schritten einrichten.    │
+│                                             │
+│                [Los geht's →]               │
+└─────────────────────────────────────────────┘
+```
+
+**Step 2 — Engine verbinden (mandatory, not skippable)**
+
+```
+┌─────────────────────────────────────────────┐
+│  🔑  Claude Code verbinden                  │
+│                                             │
+│  Anthropic API-Key:                         │
+│  [sk-ant-••••••••••••   ] [Verbindung testen]│
+│                                             │
+│  ✓  Verbunden mit claude-sonnet-4-6         │  ← after test
+│                                             │
+│  Noch keinen Key?  → console.anthropic.com  │
+│                             [Weiter →]      │
+└─────────────────────────────────────────────┘
+```
+
+"Verbindung testen" calls `POST /v1/console/setup/engine` with the key.
+The endpoint validates the key by making a minimal API probe
+(`models/list`), writes the key to `~/.config/claude-voice/.env`
+(mode 0600) if valid, and restarts the bridge adapter engine.
+Response: `{ ok: bool, model: string, error?: string }`.
+
+"Weiter →" is disabled until `ok: true`. This step cannot be skipped —
+it is the structural prerequisite for all other features.
+
+**Step 3 — Bridge wählen (skippable)**
+
+```
+┌─────────────────────────────────────────────┐
+│  💬  Über welchen Kanal willst du            │
+│      mit AtelierOS sprechen?                │
+│                                             │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  │
+│  │📱        │  │🤖        │  │💬        │  │
+│  │WhatsApp  │  │Telegram  │  │Web Chat  │  │
+│  └──────────┘  └──────────┘  └──────────┘  │
+│                                             │
+│  Du kannst das später jederzeit ändern.     │
+│               [Überspringen]  [Weiter →]    │
+└─────────────────────────────────────────────┘
+```
+
+Selecting WhatsApp or Telegram opens the Component 1 bridge wizard
+**inline inside the overlay** (the overlay grows to accommodate the
+wizard steps). Web Chat requires no setup — it is always available
+via the floating console assistant (Component 6).
+
+"Überspringen" advances without a bridge configured. The operator
+can still use the Web Chat path immediately via Component 6.
+
+**Step 4 — Bereit**
+
+```
+┌─────────────────────────────────────────────┐
+│                                             │
+│          ✓  AtelierOS ist online            │
+│                                             │
+│  Engine: claude-sonnet-4-6        ✓         │
+│  Bridge: WhatsApp                 ✓         │
+│                                             │
+│              [Dashboard öffnen →]           │
+└─────────────────────────────────────────────┘
+```
+
+Clicking "Dashboard öffnen" sets `setup_complete: true` server-side
+(`POST /v1/console/setup/complete`) and unmounts the overlay. It never
+appears again for this instance.
+
+#### Persistent incomplete-setup banner
+
+If the overlay is somehow bypassed (direct URL navigation, future code
+path) and `engine_connected: false`, a non-dismissable amber banner
+appears at the top of every page:
+
+```
+⚠  AtelierOS ist noch nicht einsatzbereit — API-Key fehlt.  [Jetzt einrichten]
+```
+
+"Jetzt einrichten" re-opens the overlay at Step 2.
+
+#### Auto-browser-open on Docker / desktop
+
+The existing systemd unit and `/etc/xdg/autostart/` entry (ADR-0037) open
+the browser on desktop login. For Docker: the `docker-compose.yml` in the
+operator bundle ships with a `ATELIER_OPEN_BROWSER=1` env var; the console
+server's startup script calls `xdg-open http://localhost:8765/console/`
+when that var is set and a display is available. This is a best-effort
+convenience, not a hard requirement — the URL is always printed to stdout.
+
+#### New backend endpoints
+
+| Method | Route | Purpose |
+|---|---|---|
+| GET | `/v1/console/setup/status` | Returns engine/bridge/complete state |
+| POST | `/v1/console/setup/engine` | Validate + save API key, restart engine |
+| POST | `/v1/console/setup/complete` | Mark setup done (idempotent) |
+
+The `/v1/console/setup/engine` endpoint writes the API key to disk and
+must therefore run as the same user as the adapter process. The key value
+is **never** logged, audited, or returned in any response body. The audit
+event `setup.engine_configured` records only `{ ok: bool, model: string }`.
+
+#### New frontend files
+
+```
+web-next/src/components/setup/
+  SetupGate.tsx           (overlay container, mounts over app tree)
+  SetupStepWelcome.tsx
+  SetupStepEngine.tsx
+  SetupStepBridge.tsx
+  SetupStepDone.tsx
+  SetupIncompleteBanner.tsx
+```
+
+---
+
+## Component 6 — Floating Console Assistant
+
+### Problem
+
+The console is powerful but dense. Operators who are not developers have
+no interactive help surface — documentation exists but is not contextual.
+At the same time, a Claude Code engine is already running: it could answer
+questions, open wizards, and make configuration changes directly in the UI.
+
+### Decision
+
+Add a collapsible floating chat widget in the bottom-right corner of every
+console page. The widget connects to a dedicated `console-assistant` session
+running on the `web` bridge. It is context-aware (knows what page the
+operator is on), can trigger UI actions, can apply configuration changes
+after confirmation, and supports voice input and output.
+
+#### Visual design
+
+**Collapsed (always visible, bottom-right corner):**
+
+```
+                                        ╭──────────╮
+                                        │  🏛  ●  │  ← dot = unread
+                                        ╰──────────╯
+```
+
+**Expanded (380 × 520 px, floats above all other content):**
+
+```
+┌───────────────────────────────────────┐
+│  AtelierOS Assistent      🎤  ─  [×]  │
+├───────────────────────────────────────┤
+│                                       │
+│  Ich sehe, du bist auf "Bridges".     │
+│  Soll ich dir WhatsApp einrichten?    │
+│                                       │
+│  ╭───────────────────────────────╮   │
+│  │ ✓ Ja, WhatsApp einrichten     │   │  ← Action-Chip
+│  ╰───────────────────────────────╯   │
+│  ╭───────────────────────────────╮   │
+│  │ ℹ Alle Bridges erklären       │   │
+│  ╰───────────────────────────────╯   │
+│                                       │
+├───────────────────────────────────────┤
+│  [Schreib oder sprich...      ] [🎤]  │
+└───────────────────────────────────────┘
+```
+
+- `─` minimises the panel to the floating button without clearing history.
+- `[×]` closes and clears the session.
+- `🎤` header toggle: enables auto-TTS for all responses.
+- `[🎤]` input button: one-shot voice input via STT.
+
+#### Session architecture
+
+The widget does NOT reuse the bridge session system. It owns a dedicated
+session:
+
+```
+bridge  = "web"
+chat_key = "console-assistant"
+```
+
+This session runs on the `assistant` persona (already in the operator
+bundle). The persona is configured with:
+- `memory_recall_enabled: false` — no long-term recall for console chats
+- `ldd_enabled: false` — no LDD overhead for interactive help
+- `forge_enabled: false` — no tool generation in help sessions
+- `skill_forge_enabled: false`
+
+The session is ephemeral: it is cleared on browser refresh (no
+persistence across page loads). Conversation state lives only in the
+React component's local state + the adapter's in-memory session.
+
+#### Context injection
+
+On every message send, the frontend appends a `_console_context` field:
+
+```json
+{
+  "message": "Wie richte ich Telegram ein?",
+  "_console_context": {
+    "current_page": "/app/bridges",
+    "active_element": "telegram-tab",
+    "setup_status": {
+      "engine_connected": true,
+      "bridges_configured": ["whatsapp"]
+    }
+  }
+}
+```
+
+The backend strips `_console_context` from the LLM message and injects
+it as a system-prompt prefix: `<console_context page="/app/bridges" .../>`.
+The context block is NEVER written to the audit chain.
+
+#### Action intents
+
+The assistant can return structured action intents alongside text.
+The frontend parses `_actions` from the SSE stream:
+
+```json
+{
+  "_actions": [
+    { "type": "open_wizard", "bridge": "telegram" },
+    { "type": "navigate", "path": "/app/workflows" },
+    { "type": "patch_setting", "route": "/v1/console/bridges/telegram/settings",
+      "body": { "enabled": true }, "label": "Telegram aktivieren" },
+    { "type": "highlight", "selector": "[data-element='telegram-tab']" }
+  ]
+}
+```
+
+| Action type | Frontend behaviour |
+|---|---|
+| `open_wizard` | Opens the Component 1 bridge wizard for the named bridge |
+| `navigate` | React Router `navigate(path)` |
+| `patch_setting` | Shows confirmation dialog (see below), then calls the REST endpoint |
+| `highlight` | Briefly pulses the matched DOM element (CSS animation, 2 s) |
+
+Every `patch_setting` action requires an explicit confirmation dialog
+before execution. The dialog cannot be suppressed — it is the structural
+safeguard against the assistant making unintended changes:
+
+```
+┌─────────────────────────────────────────┐
+│  Darf ich das für dich ausführen?       │
+│                                         │
+│  Telegram Bridge aktivieren             │
+│                                         │
+│  [Ja, ausführen]        [Abbrechen]     │
+└─────────────────────────────────────────┘
+```
+
+After execution the assistant receives a `_action_result` back-channel
+message so it can confirm: "Telegram ist jetzt aktiv."
+
+#### Voice mode
+
+- Input `[🎤]` button: activates the L23 STT chain (OpenAI Whisper →
+  local fallback). Recording starts on press, stops on release (push-to-talk)
+  or after 5 s silence. Transcript is inserted into the text input field
+  and auto-sent.
+- Output voice toggle (`🎤` in header): when on, every assistant response
+  is sent through the L12 TTS pipeline and played via the browser Audio API.
+  The widget shows a waveform animation while speaking.
+- Voice mode is per-session opt-in. Default: off.
+- The widget does NOT use the bridge voice pipeline — it calls
+  `POST /v1/console/assistant/tts` with the response text and receives
+  an audio blob directly. This avoids coupling the console helper to the
+  bridge daemon's audio routing.
+
+#### Streaming transport
+
+Messages stream via Server-Sent Events:
+`GET /v1/console/assistant/stream?session_id={sid}`
+
+Each SSE event is one of:
+- `data: {"type":"text","delta":"..."}` — streaming text chunk
+- `data: {"type":"action","payload":{...}}` — action intent
+- `data: {"type":"done"}` — turn complete
+
+The `session_id` is a random UUID generated client-side on widget mount
+and kept in React state for the lifetime of the page.
+
+#### Audit
+
+| Event | Fields |
+|---|---|
+| `console.assistant_message` | `session_id_prefix` (8 chars), `page`, `has_action: bool` |
+| `console.assistant_action` | `action_type`, `route` (for patch_setting), `confirmed: bool` |
+
+Message content, context payloads, and action bodies are **never** written
+to the audit chain. Only metadata is recorded.
+
+#### New backend endpoints
+
+| Method | Route | Purpose |
+|---|---|---|
+| GET | `/v1/console/assistant/stream` | SSE stream for assistant session |
+| POST | `/v1/console/assistant/message` | Send a message (returns session_id) |
+| POST | `/v1/console/assistant/tts` | Convert text to audio blob (L12 TTS) |
+| DELETE | `/v1/console/assistant/session` | Clear session state |
+
+#### New frontend files
+
+```
+web-next/src/components/assistant/
+  ConsoleAssistant.tsx         (root, mounts in App.tsx outside router)
+  AssistantWidget.tsx          (expanded panel)
+  AssistantButton.tsx          (collapsed FAB)
+  AssistantMessageList.tsx     (message stream renderer)
+  AssistantActionChips.tsx     (suggested action buttons)
+  AssistantConfirmDialog.tsx   (patch_setting confirmation)
+  AssistantVoiceInput.tsx      (STT push-to-talk)
+  useAssistantStream.ts        (SSE hook)
+  useAssistantTts.ts           (TTS + audio playback hook)
+```
+
+`<ConsoleAssistant>` is mounted once at the root of `App.tsx`, outside
+the `<Routes>` tree, so it persists across page navigations.
+
+---
+
 ## Cross-cutting design rules
 
 These apply to all four components and must not be violated in implementation:
@@ -585,26 +960,32 @@ These apply to all four components and must not be violated in implementation:
 
 ## Milestones
 
-All four components are independent and can be developed in parallel.
+All six components are independent and can be developed in parallel.
 Suggested order by impact/effort ratio:
 
 | Milestone | Component | Deliverable |
 |---|---|---|
+| **M0** | First-Run Setup Gate | `SetupGate` overlay, engine-connect step, `setup/status` + `setup/engine` endpoints |
 | **M1** | Bridge Wizard | Tile grid + wizard shell (Steps 1–3), WhatsApp live QR poll |
 | **M2** | People Hub | List + side-panel + role/quota/consent widgets |
-| **M3** | Agent Hub Peer Cards | Card grid + invite modal (Einladen + Code-eingeben paths) |
-| **M4** | Workflow Explanation | Haiku explain endpoint + drawer, cached per workflow |
-| **M5** | Workflow Templates | Gallery tab + 5 bundled AWPKG files |
-| **M6** | Run Timeline | Gantt-style run detail view |
-| **M7** | Node Quick-Add Palette | FAB palette replacing the modal flow |
+| **M3** | Floating Assistant (text) | Widget shell, SSE stream, context injection, action intents (open_wizard + navigate) |
+| **M4** | Floating Assistant (actions) | `patch_setting` confirm dialog, `highlight` intent, action result back-channel |
+| **M5** | Floating Assistant (voice) | STT push-to-talk input, TTS output, voice toggle |
+| **M6** | Agent Hub Peer Cards | Card grid + invite modal (Einladen + Code-eingeben paths) |
+| **M7** | Workflow Explanation | Haiku explain endpoint + drawer, cached per workflow |
+| **M8** | Workflow Templates | Gallery tab + 5 bundled AWPKG files |
+| **M9** | Run Timeline | Gantt-style run detail view |
+| **M10** | Node Quick-Add Palette | FAB palette replacing the modal flow |
 
-M1 and M2 unblock the most operator-facing self-service. M3 unblocks the
-A2A demo path. M4–M7 complete the workflow polish.
+M0 is the prerequisite for a usable Docker deployment — ship first.
+M1–M3 together constitute the minimum self-service experience for a new operator.
+M4–M5 complete the assistant. M6 unblocks the A2A demo path. M7–M10 polish workflows.
 
 ---
 
 ## Must NOT do
 
+**Component 1–4 (existing):**
 - Do not delete the raw JSON textarea — keep it as the advanced accordion.
 - Do not bypass L18 role enforcement in the People Hub role dropdown.
 - Do not put AWP YAML, explanation text, invite token payloads, or QR content
@@ -619,3 +1000,29 @@ A2A demo path. M4–M7 complete the workflow polish.
   is structural, not optional).
 - Do not widen the `/v1/console/agent-hub/invites` TTL beyond 24 h without
   an ADR update.
+
+**Component 5 (First-Run Setup Gate):**
+- Do not make the engine-connection step skippable — it is the structural
+  prerequisite for all other features.
+- Do not log, audit, or return the API key value in any response or event.
+- Do not write the API key to any location other than
+  `~/.config/claude-voice/.env` (mode 0600).
+- Do not mark `setup_complete: true` before `engine_connected: true`.
+- Do not suppress the incomplete-setup banner via any env var or query param.
+
+**Component 6 (Floating Console Assistant):**
+- Do not write message content, context payloads, or action bodies to the
+  audit chain — metadata only.
+- Do not allow `patch_setting` actions without a preceding confirmation
+  dialog — the confirmation step is not optional.
+- Do not persist conversation history across page refreshes — the session
+  is ephemeral by design.
+- Do not enable `memory_recall_enabled` for the console-assistant persona —
+  console help sessions must not feed into the operator's long-term recall.
+- Do not allow the assistant to execute actions that bypass L18 role
+  enforcement (e.g. the assistant cannot promote a user beyond the
+  operator's own role tier).
+- Do not couple the widget TTS path to the bridge daemon's audio routing —
+  use the dedicated `/v1/console/assistant/tts` endpoint.
+- Do not render the `<ConsoleAssistant>` component inside the `<Routes>` tree
+  — it must persist across navigation.
