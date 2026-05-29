@@ -1,6 +1,6 @@
 # ADR-0067 — HermesEngine Production Parity: Equal-Standing Local Engine
 
-**Status:** Proposed — 2026-05-29
+**Status:** Accepted — 2026-05-29 · M2.1–M2.5 Implemented 2026-05-29
 **Date:** 2026-05-29
 **Authors:** Claude Code (maintainer session)
 **Type:** Architecture — Compliance hardening + UX parity + Observability
@@ -379,11 +379,11 @@ OpenCode gets the same treatment (`atelier_bridge_opencode_turns_total` etc.).
 | Milestone | Status | Notes |
 |---|---|---|
 | ADR-0066 M1 — engine + delegation + dispatch | ✅ Done 2026-05-29 | 22/22 E2E checks |
-| M2.1 — compliance gates | ⬜ Pending | |
-| M2.2 — per-turn audit events | ⬜ Pending | |
-| M2.3 — `/engine hermes` switcher | ⬜ Pending | |
-| M2.4 — console engine selector | ⬜ Pending | |
-| M2.5 — Prometheus metrics | ⬜ Pending | |
+| M2.1 — compliance gates | ✅ Done 2026-05-29 | `_run_pre_dispatch_gates()` + `agents/trust/hermes.yaml` + hermes in `data_classification.py` |
+| M2.2 — per-turn audit events | ✅ Done 2026-05-29 | 10 new event types; hermes.turn_start/end/error + opencode parity |
+| M2.3 — `/engine hermes` switcher | ✅ Done 2026-05-29 | ENGINE_ALIASES + VALID_ENGINES + supported_aliases() |
+| M2.4 — console engine selector | ✅ Done 2026-05-29 | `routes/engine.py` — GET/PUT /settings/engine + health endpoint |
+| M2.5 — Prometheus metrics | ✅ Done 2026-05-29 | `engine_metrics.py` — lazy prometheus_client, record_hermes/opencode_turn() |
 
 ---
 
