@@ -85,14 +85,17 @@ no `Quick start` section. Low friction, no Go code required.
 launch-enabled integrations in the Assistants tier. A docs-only entry is
 likely to be deprioritized or declined for the Assistants group specifically.
 
-**Variant B — Docker-native launcher (novel pattern)**
+**Variant B — Docker-native launcher (rejected)**
 The `cmd/launch/atelieros.go` checks for Docker, pulls the image, and starts
-`docker run ghcr.io/veegee82/atelieros:latest`. Would be the first
-Docker-based `ollama launch` integration.
+`docker run ghcr.io/veegee82/atelieros:latest` directly.
 
-*Retained as a possible M3 path.* Requires Ollama maintainer buy-in. Must be
-raised in a GitHub issue before the PR, per `CONTRIBUTING.md`. Risk: the team
-may reject Docker-based launchers as too heavyweight or a maintenance burden.
+*Rejected.* Code analysis of all 10+ existing launchers in `cmd/launch/` confirms
+that **Docker does not appear as an install or run method in any of them**. Every
+launcher calls a native binary (`hermes`, `openclaw`, `atelier`, etc.). Introducing
+Docker as a direct dependency of `ollama launch` would be a novel pattern requiring
+a separate architectural discussion with the Ollama team — and would likely be
+declined as a maintenance burden and a hard system dependency. Docker is better
+kept internal to the `atelier` Python CLI, transparent to the Go launcher.
 
 **Variant C — Thin `atelier-launcher` PyPI package (chosen)**
 Create a lightweight `atelieros` package on PyPI that:
@@ -199,16 +202,24 @@ Configure(model) → atelier config set ollama-url <url> --model <tag>
 Run() → atelier gateway start
 ```
 
-**Two questions before we open a PR:**
+**One question before we open a PR:**
 
-1. **Is the Assistants tier the right fit?** AtelierOS is closer to OpenClaw
-   (messaging bridge + gateway daemon) than to Hermes (autonomous agent). We're
-   happy to be placed in a different category if that fits better.
+1. **Is `pip install` (Python) acceptable as the auto-install dependency for
+   `cmd/launch/`?** We looked at all existing launchers: Hermes uses `curl | bash`,
+   OpenClaw / Codex / Pi use `npm`. No launcher uses `pip` yet. Internally,
+   `atelier setup` manages Docker, but the Go code in `cmd/launch/atelieros.go`
+   would only ever call `pip install atelieros` to get the `atelier` binary —
+   identical pattern to `npm install` for OpenClaw. If Python is not acceptable,
+   we can provide a `curl | bash` installer script instead (same as Hermes).
 
-2. **Is a `pip install` → Docker-wrapping launcher acceptable for `cmd/launch/`?**
-   This would be the first launcher in that group where the CLI itself wraps a
-   Docker container. If there are concerns about Docker as a hard dependency, we
-   can discuss a fully-native Python runner as an alternative.
+   *(We confirmed: Docker does not appear as an install method in any existing
+   `cmd/launch/` file. The Docker runtime is fully contained inside the
+   `atelier` CLI and transparent to the Ollama launcher.)*
+
+   **Tier:** We intend to list under **Assistants** — AtelierOS is a
+   messaging-bridge gateway (Discord, Telegram, Slack, WhatsApp, Email),
+   which matches that category's description ("AI assistants that help with
+   everyday tasks") more closely than the Coding Agents tier.
 
 ## Draft documentation page
 
@@ -606,9 +617,12 @@ The existing AtelierOS logo exported as a clean SVG (dark-mode friendly, square 
 
 ### Negative / risks
 
-- **Docker acceptance risk:** Ollama maintainers may not want a Docker-wrapping
-  launcher in `cmd/launch/`. Mitigation: raise in the issue before the PR; fallback
-  is a pure-Python native launcher with optional Docker as the runtime backend.
+- **pip acceptance risk:** Ollama maintainers may not want `pip` as an auto-install
+  dependency alongside npm and curl. Mitigation: the issue asks this question
+  explicitly; fallback is a `curl | bash` installer script identical to the Hermes
+  pattern (script installs Python package or pulls Docker image natively).
+  Docker-direct launch was evaluated and rejected — no existing launcher uses Docker
+  as an install/run method; the pattern would be novel and risky to propose.
 - **Maintenance burden:** Every Ollama API change or new launch interface may require
   an update to `cmd/launch/atelieros.go`. Mitigation: the Go file is thin (delegates
   all logic to the Python package).
