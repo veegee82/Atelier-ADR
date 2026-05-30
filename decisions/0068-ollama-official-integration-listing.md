@@ -119,11 +119,189 @@ Docker/native decision in the Python package where it belongs.
 
 **Changes to `ollama/ollama`:**
 
-1. **Open GitHub issue** titled `integration: add AtelierOS as an Ollama Assistant`
-   - Explain AtelierOS: messaging-bridge AI assistant for Discord/Telegram/Slack/WhatsApp
-   - Explain Ollama role: local inference via HermesEngine, `ATELIER_OLLAMA_BASE_URL`
-   - Disclose: Docker-based distribution, propose `atelier-launcher` approach
-   - Ask: does the team accept a Docker-wrapping launcher? Any objections to Assistants tier?
+1. **Open GitHub issue** — full text below, to be posted at `github.com/ollama/ollama/issues/new`
+
+---
+
+#### GitHub Issue: `integration: add AtelierOS as an Ollama Assistant`
+
+> **Title:** `integration: add AtelierOS as an Ollama Assistant`
+>
+> **Labels to request:** `enhancement`, `integrations`
+
+```markdown
+## What is AtelierOS?
+
+AtelierOS is an open-source AI assistant gateway that bridges messaging platforms
+(Discord, Telegram, Slack, WhatsApp, Email) to local and cloud AI backends through
+a single compliant, audited layer. It is MIT/Apache-2.0 licensed and designed for
+self-hosted deployment.
+
+Key properties:
+- Multi-bridge: one running instance covers all connected channels simultaneously
+- GDPR + EU AI Act compliant out of the box: hash-chained audit log, per-user consent
+  gate (deny-by-default), one-time AI-disclosure card, data-residency routing
+- Distributed as a Docker image: `ghcr.io/veegee82/atelieros:latest`
+- Repo: https://github.com/veegee82/AtelierOS
+
+## Existing Ollama integration
+
+AtelierOS already ships a first-class Ollama integration called HermesEngine:
+
+- Speaks Ollama's `/api/chat` streaming API
+- Configurable via `ATELIER_OLLAMA_BASE_URL` (defaults to `http://localhost:11434`)
+- Model selection via `ATELIER_HERMES_MODEL` (aliases: `hermes-fast` / `hermes-balanced`
+  / `hermes-capable` / `hermes-large`, or any direct Ollama tag)
+- Passes the system's data-classification and egress-lockdown compliance gates
+  (`locality=local, network_egress=none`) — the only AtelierOS engine that qualifies
+  for CONFIDENTIAL tasks without a cloud-egress exception
+- Users switch to it per-chat with `/engine hermes`
+
+## What we're proposing
+
+We'd like AtelierOS listed under **Integrations → Assistants** on docs.ollama.com,
+alongside OpenClaw and Hermes Agent.
+
+We've looked at the existing `cmd/launch/` implementations (hermes.go, openclaw.go)
+and understand the full scope of work required:
+
+| File | Status |
+|---|---|
+| `docs/integrations/atelieros.mdx` | Draft ready (see below) |
+| `docs/integrations/index.mdx` | +1 line under Assistants |
+| `docs/docs.json` | +1 entry in Assistants group |
+| `app/ui/app/public/launch-icons/atelieros.svg` | Logo ready to export |
+| `cmd/launch/atelieros.go` | Ready to write once install path confirmed |
+| `cmd/launch/atelieros_test.go` | Ready to write alongside Go code |
+
+## Install path question (main thing we need your input on)
+
+AtelierOS is currently Docker-only. To support `ollama launch atelieros` in the
+same style as Hermes (curl installer) and OpenClaw (npm), we plan to publish a
+thin `atelieros` package on PyPI:
+
+```bash
+pip install atelieros   # installs the `atelier` CLI
+atelier setup           # wizard: detect Ollama, pull Docker image, configure bridge
+atelier gateway start   # starts the daemon
+```
+
+Internally, `atelier setup` and `atelier gateway start` call `docker run
+ghcr.io/veegee82/atelieros:latest` with the appropriate env vars
+(`ATELIER_OLLAMA_BASE_URL`, `ATELIER_HERMES_MODEL`, bridge toggles). On hosts
+where the full repo is present natively, it falls back to calling `bridge.sh`
+directly (no Docker required).
+
+The Go code in `cmd/launch/atelieros.go` would then be straightforward:
+```
+binary() → look for `atelier` in PATH
+Configure(model) → atelier config set ollama-url <url> --model <tag>
+Run() → atelier gateway start
+```
+
+**Two questions before we open a PR:**
+
+1. **Is the Assistants tier the right fit?** AtelierOS is closer to OpenClaw
+   (messaging bridge + gateway daemon) than to Hermes (autonomous agent). We're
+   happy to be placed in a different category if that fits better.
+
+2. **Is a `pip install` → Docker-wrapping launcher acceptable for `cmd/launch/`?**
+   This would be the first launcher in that group where the CLI itself wraps a
+   Docker container. If there are concerns about Docker as a hard dependency, we
+   can discuss a fully-native Python runner as an alternative.
+
+## Draft documentation page
+
+<details>
+<summary>docs/integrations/atelieros.mdx (draft)</summary>
+
+```mdx
+---
+title: AtelierOS
+---
+
+AtelierOS is a privacy-first AI assistant gateway that bridges messaging platforms
+(Discord, Telegram, Slack, WhatsApp, and Email) to local and cloud AI models
+through a GDPR-compliant, EU AI Act-ready layer.
+
+## Quick start
+
+\```bash
+ollama launch atelieros
+\```
+
+Ollama handles everything automatically:
+
+1. **Install** — If AtelierOS isn't installed, Ollama prompts to install it via pip
+2. **Security** — On first launch, a disclosure card explains AI-generated responses (EU AI Act Art. 50)
+3. **Model** — Pick a model from the selector (local or cloud)
+4. **Onboarding** — Ollama configures the Ollama provider and sets your model as primary
+5. **Gateway** — Starts in the background and guides you through connecting a channel
+
+<Note>AtelierOS requires Docker. Install [Docker Desktop](https://www.docker.com/products/docker-desktop/)
+or Docker Engine before running `ollama launch atelieros`.</Note>
+
+## Connect messaging apps
+
+```bash
+atelier gateway setup
+```
+
+Link Discord, Telegram, Slack, WhatsApp, or Email to chat with your local models from anywhere.
+
+## Recommended models
+
+**Cloud models:**
+
+- `kimi-k2.5:cloud` — Multimodal reasoning with subagents
+- `qwen3.5:cloud` — Reasoning, coding, and agentic tool use with vision
+- `glm-5.1:cloud` — Reasoning and code generation
+
+**Local models:**
+
+- `qwen3:8b` — Fast reasoning and instruction-following locally (~5 GB VRAM)
+- `gemma4:27b` — Strong general assistant locally (~18 GB VRAM)
+
+More models at [ollama.com/search](https://ollama.com/search).
+
+## EU compliance mode
+
+AtelierOS ships with a built-in GDPR + EU AI Act compliance layer. To run in
+strict local-only mode with no cloud egress:
+
+```bash
+atelier setup --profile eu-production
+```
+
+This configures the Ollama-only tenant preset, disables all cloud engine routes,
+and enables the hash-chained tamper-evident audit log.
+
+## Reconfigure
+
+Re-run the full setup wizard at any time:
+
+```bash
+atelier setup
+```
+
+## Manual setup (without `ollama launch`)
+
+```bash
+pip install atelieros
+atelier setup
+```
+
+During setup, select **Ollama** as the provider and confirm the endpoint
+(default: `http://127.0.0.1:11434`).
+\```
+</details>
+
+Thanks for your time — happy to adjust anything based on your feedback before writing the PR.
+```
+
+---
+
+**M1 done-signal:** Issue posted; maintainer response received; PR scope confirmed.
 
 2. **`docs/integrations/atelieros.mdx`** — new file:
 
